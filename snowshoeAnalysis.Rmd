@@ -1,0 +1,454 @@
+---
+title: "Snowshoe Analysis"
+author: <center> Garrett Springer <center>
+output: html_document
+---
+
+```{=html}
+<style type="text/css">
+h1.title {
+  font-size: 40px;
+  text-align: center;
+}
+</style>
+```
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(gridExtra)
+library(bestglm)
+library(car)
+library(corrplot)
+library(glmnet)
+library(pROC) 
+library(MASS)
+```
+
+
+# Data and Description
+
+A company that sells outdoor equipment collected data on 371 customers. The company sells a variety of products and is considering selling snowshoes. The following variables were recorded:
+
+| Variable  | Description                                                                                                                                                                                              |
+|------------|------------------------------------------------------------|
+| age       | Age of the customer in years                                                                                                                                                                             |
+| product   | The primary type of product the customer has previously purchased. One of: "winterSports" (used as the baseline), "mountainSports", "waterSports"                                                        |
+| quantity  | The total number of unique products the customer has previously purchased                                                                                                                                |
+| tenure    | The number of days since the customers' first purchase                                                                                                                                                   |
+| snowshoes | Indication of purchasing snowshoes in the future, if the company were to sell them. One of: 1 (the customer indicated they would buy snowshoes), 0 (the customer indicated they would not buy snowshoes) |
+
+Download the snowshoe.txt file from Canvas (Files -\> DATA SETS), and put it in the same folder as this R Markdown file.
+
+## PART 1 (PREDICT SNOWSHOES) -----------------------------------------------
+
+For Part 1 of this analysis, you will address the company's first goal of using the data from their current customers to create a model to predict whether a particular customer will buy snowshoes.
+
+### Complete your exploratory data analysis (EDA) in this section. You may use multiple code chunks, if you wish, to organize your code.
+
+```{r read-in-data}
+snowshoes <- read_table("snowshoe.txt")
+
+snowshoes$product <- as.factor(snowshoes$product)
+
+
+summary(snowshoes)
+```
+
+```{r}
+quan_plot <- snowshoes %>% 
+  ggplot(mapping = aes(x = quantity, y = snowshoes)) + 
+  geom_point(position = position_jitter(height = .1)) +
+  theme(aspect.ratio = 1)
+
+tenure_plot <- snowshoes %>% 
+  ggplot(mapping = aes(x = tenure, y = snowshoes)) + 
+  geom_point(position = position_jitter(height = .1))+
+  theme(aspect.ratio = 1)
+
+age_plot <- snowshoes %>% 
+  ggplot(mapping = aes(x = age, y = snowshoes)) + 
+  geom_point(position = position_jitter(height = .1))+
+  theme(aspect.ratio = 1)
+
+grid.arrange(quan_plot, tenure_plot, age_plot, ncol = 2)
+
+
+table(snowshoes$age, snowshoes$snowshoes)
+
+snowshoes %>% 
+  group_by(product) %>% 
+  summarise(percent_rented = mean(snowshoes))
+
+print("Baseline")
+mean(snowshoes$snowshoes)
+```
+
+### Perform variable selection in this section. You may use multiple code chunks, if you wish, to organize your code.
+
+```{r}
+#we need to make indicator variables
+snowshoes_new <- snowshoes %>% 
+  mutate(winterSports = ifelse(product == "winterSports", 1, 0)) %>% 
+  mutate(waterSports = ifelse(product == "waterSports", 1, 0)) %>% 
+  mutate(mountainSports = ifelse(product == "mountainSports", 1, 0)) 
+
+snowshoes_new$snowshoes <- as.factor(snowshoes_new$snowshoes)
+
+head(snowshoes_new)
+```
+
+```{r}
+snowshoes_x <- as.matrix(snowshoes_new[,c(1,2,3,6,7,8)])
+
+snowshoes_y <- as.matrix(snowshoes_new[, 5])
+
+# use cross validation to pick the "best" (based on MSE) lambda
+snowshoes_en <- cv.glmnet(x = snowshoes_x,
+                          y = snowshoes_y, 
+                          family = "binomial",
+                          type.measure = "deviance",
+                          alpha = .5)  
+
+
+snowshoes_en$lambda.min
+
+snowshoes_en$lambda.1se
+
+coef(snowshoes_en, s = "lambda.1se")
+
+
+
+
+snowshoes_best_subsets_bic <- bestglm(as.data.frame(snowshoes),
+                                  IC = "BIC",
+                                  method = "exhaustive",
+                                  TopModels = 1,
+                                  family = binomial)
+summary(snowshoes_best_subsets_bic$BestModel)
+```
+
+### Fit a model using the variables you selected from the prevous section, and determine in any interaction(s) are needed for this model in this section. You may use multiple code chunks, if you wish, to organize your code.
+
+```{r}
+snowshoes_logistic <- glm(snowshoes ~
+                            quantity + age + product, 
+                          data = snowshoes,
+                          family = binomial(link = "logit"))
+
+snow_all_int <- glm(snowshoes ~
+                            quantity * age * product, 
+                          data = snowshoes,
+                          family = binomial(link = "logit"))
+
+
+#no interactions does better than all interactions
+anova(snowshoes_logistic, snow_all_int, test = "Chisq")
+
+
+snow_int_age <- glm(snowshoes ~
+                      quantity * age + product * age, 
+                    data = snowshoes,
+                    family = binomial(link = "logit"))
+
+#no interactions does better than interactions with age
+anova(snowshoes_logistic, snow_int_age, test = "Chisq")
+
+snow_int_quan <- glm(snowshoes ~
+                      quantity * age + product * quantity, 
+                    data = snowshoes,
+                    family = binomial(link = "logit"))
+
+#no interactions does better than interactions with quantity
+anova(snowshoes_logistic, snow_int_quan, test = "Chisq")
+
+snow_int_prod <- glm(snowshoes ~
+                      product * age + product * quantity, 
+                    data = snowshoes,
+                    family = binomial(link = "logit"))
+
+#no interactions does better than interactions with product
+anova(snowshoes_logistic, snow_int_prod, test = "Chisq")
+
+snow_int_quan_age <- glm(snowshoes ~
+                      quantity * age + product, 
+                    data = snowshoes,
+                    family = binomial(link = "logit"))
+
+#no interactions does better than interaction between quantity and age
+anova(snowshoes_logistic, snow_int_quan_age, test = "Chisq")
+
+snow_int_quan_prod <- glm(snowshoes ~
+                      quantity * product + age, 
+                    data = snowshoes,
+                    family = binomial(link = "logit"))
+
+#no interactions does better than interaction between quantity and product
+anova(snowshoes_logistic, snow_int_quan_prod, test = "Chisq")
+
+snow_int_age_prod <- glm(snowshoes ~
+                      quantity + product * age, 
+                    data = snowshoes,
+                    family = binomial(link = "logit"))
+
+#no interactions does better than interaction between age and product
+anova(snowshoes_logistic, snow_int_age_prod, test = "Chisq")
+
+
+#after all tests, the original model performs the best without any
+#interactions
+summary(snowshoes_logistic)
+```
+
+After all tests, the original model performs the best without any interactions
+
+### Based on your results above, fit an appropriate ("final") model and check model assumptions in this section. You may use multiple code chunks, if you wish, to organize your code.
+
+##### X vs log odds is linear
+
+```{r}
+scatter.smooth(x = snowshoes$quantity, 
+               y = as.numeric(snowshoes$snowshoes) - 1)
+scatter.smooth(x = snowshoes$age, 
+               y = as.numeric(snowshoes$snowshoes) - 1)
+```
+
+This assumption is met because the lines are strictly increasing.
+
+##### Observations are independent
+
+It does not say that the data was randomly sampled, however, one persons data should not affect the other. There may be some problems with people being family members or friends. So I would say this assumption is not met but we will move on with our analysis anyway.
+
+##### No influential points
+
+```{r}
+calc_df_fits <- function(df, lm){
+  
+    df$dffits <- dffits(lm)
+  
+  plot <- ggplot(data = df) + 
+    geom_point(mapping = aes(x = as.numeric(rownames(df)), 
+                             y = abs(dffits))) +
+    ylab("Absolute Value of DFFITS for Y") +
+    xlab("Observation Number") +
+    geom_hline(mapping = aes(yintercept = 2 *  sqrt(length(lm$coefficients) / length(dffits))),
+               color = "red", 
+               linetype = "dashed") +
+    theme(aspect.ratio = 1) + 
+    labs(title = "DFFITS plot")
+  
+  thing <- df %>% 
+    mutate(rowNum = row.names(df)) %>%  
+    filter(abs(dffits) > 2 * sqrt(length(lm$coefficients) / 
+                                    length(dffits))) %>%
+    arrange(desc(abs(dffits)))
+  
+  out <- list(plot, thing)
+  return(out)
+  
+}
+
+calc_df_fits(snowshoes, snowshoes_logistic)
+```
+
+This assumption is met. We can see no influential points in the dffits plot.
+
+##### Additional predictor variables are not required
+
+There could possibly be more factors to a person renting snowshoes, but in our model we already removed some of our variables so we should not need more. This assumption is met.
+
+##### Multicollinearity
+
+```{r}
+vif(snowshoes_logistic)
+corrplot(cor(snowshoes %>% 
+               dplyr::select(-snowshoes, -product, -tenure)), type = "upper")
+```
+
+The vifs look great. They are all close to 1. This assumption is met.
+
+### Complete statistical inference based on the best model you chose in this section. You may use multiple code chunks, if you wish, to organize your code.
+
+```{r}
+exp(confint(snowshoes_logistic))
+
+new_person = data.frame(age = 23,
+                        product = "waterSports",
+                        quantity = 6)
+
+new_pred <- predict(snowshoes_logistic, 
+        newdata = new_person, 
+        type = 'response', 
+        se.fit = T)
+
+new_log_odds  <- predict(snowshoes_logistic, 
+        newdata = new_person,
+        se.fit = T)
+
+
+xbar <- new_pred$fit
+me <- qnorm(p = .975) * new_pred$se.fit
+
+xbar + c(-1,0,1) * me
+```
+
+```{r}
+snowshoes_preds <- predict(snowshoes_logistic, type = "response")
+# create a sequence from 0 to 1 to represent all possible cut-off values that
+# we could choose:
+possible_cutoffs <- seq(0, 1, length = 100)
+# transform heart$chd from a factor with levels "yes" and "no" to a factor with 
+# levels 1 and 0:
+snowshoes_binary <- snowshoes$snowshoes
+# create an empty vector where we will store the percent misclassified for each
+# possible cut-off value we created:
+percent_misclass <- rep(NA, length(possible_cutoffs))
+
+# for each possible cut-off value, (1) grab the cut-off value, (2) for all 757
+# patients, store a 1 in "classify" if their predicted probability is larger 
+# than the cut-off value, and (3) compute the average percent misclassified 
+# across the 757 patients when using that cut-off by averaging the number of 
+# times "classify" (0 or 1 based on how that cut-off classified a person) is 
+# not the same as heart_binary (the truth):
+for(i in 1:length(possible_cutoffs)) {
+  cutoff <- possible_cutoffs[i]  # (1)
+  classify <- ifelse(snowshoes_preds > cutoff, 1, 0)  # (2) 
+  percent_misclass[i] <- mean(classify != snowshoes_binary)  # (3)
+}
+# percent_misclass holds the average misclassification rates for each cut-off
+
+# put this information in a dataframe so we can plot it with ggplot:
+misclass_data <- as.data.frame(cbind(percent_misclass, possible_cutoffs))
+
+# plot the misclassification rate against the cut-off value:
+ggplot(data = misclass_data) +
+  geom_line(mapping = aes(x = possible_cutoffs, y = percent_misclass),
+            size = 2) +
+  theme_bw() + 
+  xlab("Cutoff Value") +
+  ylab("Percent Misclassified") +
+  theme(aspect.ratio = 1)
+
+# choose the "best" cut-off that minimizes the percent misclassified:
+cutoff <- possible_cutoffs[which.min(percent_misclass)]
+cutoff
+```
+
+```{r}
+pred <- snowshoes_preds > cutoff
+
+
+conf_matrix <- table("truth" = snowshoes$snowshoes,
+                     "prediction" = pred)
+
+addmargins(conf_matrix)
+```
+
+```{r}
+my_roc <- roc(snowshoes$snowshoes,
+              snowshoes_preds)
+auc(my_roc)
+```
+
+## PART 2 (PREDICT TENURE) ---------------------------------------------------
+
+For Part 2 of this analysis, you will address the company's second goal of using this data to create a model to predict a customer's tenure (the number of days since the customers' first purchase).
+
+```{r}
+snowshoes <- read_table("snowshoe.txt")
+snowshoes <- as_tibble(snowshoes)
+
+snowshoes$product <- as.factor(snowshoes$product)
+```
+
+### Complete your exploratory data analysis (EDA) in this section. You may use multiple code chunks, if you wish, to organize your code.
+
+```{r}
+snowshoes %>% 
+  ggplot() + 
+  geom_histogram(mapping = aes(x = tenure, y = ..density..),
+                 binwidth = 2)
+```
+
+### Perform variable selection in this section. You may use multiple code chunks, if you wish, to organize your code.
+
+```{r}
+snowshoes <- snowshoes %>% 
+  dplyr::select(quantity, age, product, snowshoes, tenure)
+
+snowshoes_best_subsets_bic <- bestglm(as.data.frame(snowshoes),
+                                  IC = "BIC",
+                                  method = "exhaustive",
+                                  TopModels = 1,
+                                  family = poisson(link = 'log'))
+BIC(snowshoes_best_subsets_bic$BestModel)
+
+summary(snowshoes_best_subsets_bic$BestModel)
+```
+
+### Fit a model using the variables you selected from the prevous section, and determine in any interaction(s) are needed for this model in this section. You may use multiple code chunks, if you wish, to organize your code.
+
+```{r}
+snowshoes_poisson <- glm(tenure ~ quantity + age,
+                         data = snowshoes,
+                         family = poisson(link = 'log'))
+
+
+snowshoes_poisson_int <- glm(tenure ~ quantity * age,
+                         data = snowshoes,
+                         family = poisson(link = 'log'))
+
+#the model with the interaction term does better (has a low pvalue)
+anova(snowshoes_poisson, snowshoes_poisson_int,
+      test = 'Chisq')
+
+summary(snowshoes_poisson_int)
+```
+
+### Based on your results above, fit an appropriate ("final") model and check model assumptions in this section. You may use multiple code chunks, if you wish, to organize your code.
+
+```{r}
+snowshoes %>% 
+  ggplot(mapping = aes(x = age, y = log(tenure))) + 
+  geom_point() +
+  theme(aspect.ratio = 1)
+
+snowshoes %>% 
+  ggplot(mapping = aes(x = quantity, y = log(tenure))) + 
+  geom_point() +
+  theme(aspect.ratio = 1)
+```
+
+```{r}
+mean(snowshoes$tenure)
+var(snowshoes$tenure)
+
+snowshoes_quasipoisson_int <- glm(tenure ~ quantity * age,
+                         data = snowshoes,
+                         family = quasipoisson(link = 'log'))
+summary(snowshoes_quasipoisson_int)
+
+pchisq(q = snowshoes_poisson_int$deviance, df = snowshoes_poisson_int$df.residual,
+       lower.tail = FALSE)
+```
+
+### Complete statistical inference based on the best model you chose in this section. You may use multiple code chunks, if you wish, to organize your code.
+
+```{r}
+lr <- snowshoes_poisson_int$null.deviance - snowshoes_poisson_int$deviance
+
+print(lr)
+
+pchisq(lr, df = length(snowshoes_poisson_int$coefficients)-1, 
+       lower.tail = F)
+```
+
+```{r}
+new_customer <- data.frame(age = 52,
+                           quantity = 10)
+
+pred <- predict(snowshoes_poisson_int, newdata = new_customer,
+        se.fit = T)
+
+pred$se.fit * qnorm(p = .975)
+```
